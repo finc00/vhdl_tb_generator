@@ -1,0 +1,430 @@
+###### PACKAGE DEFINITIONS ######
+import sys
+import os
+
+###### CONSTANT DEFINITIONS ######
+class bcolors:
+    # Colours for the terminal 
+    HEADER      = '\033[95m'
+    OKBLUE      = '\033[94m'
+    OKCYAN      = '\033[96m'
+    OKGREEN     = '\033[92m'
+    WARNING     = '\033[93m'
+    FAIL        = '\033[91m'
+    ENDC        = '\033[0m'
+    BOLD        = '\033[1m'
+    UNDERLINE   = '\033[4m'
+
+
+##########################################################################################
+#                           Function to extract info from source VHDL file               #
+##########################################################################################
+def extract_entity_info(vhdl_file):
+    with open(vhdl_file, 'r') as file:
+        vhdl_code = file.readlines()
+
+    entity_name = ""
+    entity_architecture = ""
+    generics    = []
+    ports       = []
+    entity      = []
+    in_generics = False
+    in_ports    = False
+    in_entity   = False
+
+    for line in vhdl_code:
+        stripped_line = line.strip()
+
+        # Find the bounds of the entity definition and extract the entity name
+        if stripped_line.lower().startswith("entity"):
+            entity_name = stripped_line.split()[1]
+            in_entity = True
+        
+        elif in_entity:
+            entity.append(stripped_line)
+            if stripped_line.lower().startswith("end") and stripped_line.lower().endswith(";"):
+                in_entity = False
+                
+        # Find the bounds of the generic definitions and extract them
+        if stripped_line.lower().startswith("generic"):
+            in_generics = True
+            generics.append(stripped_line)
+            
+        elif in_generics:
+            generics.append(stripped_line)
+            if stripped_line.endswith(");"):
+                in_generics = False
+
+        # Find the bounds of the port definitions and extract them
+        if stripped_line.lower().startswith("port"):
+            in_ports = True
+            ports.append(stripped_line)
+
+        elif in_ports:
+            ports.append(stripped_line)
+            #if stripped_line.lower().endswith(')') and not stripped_line.lower().startswith('--'):
+            if not in_entity:
+                in_ports = False
+
+        if stripped_line.lower().startswith("architecture"):
+            entity_architecture = stripped_line.split()[1]
+            print(entity_architecture)
+                      
+    # Clean the generics list                 
+    generic_list = []
+    for generic in generics:
+        # Step 1: Extract the comment (if any)
+        comment = None
+        if "--" in generic:
+            generic, comment = generic.split("--", 1)
+            comment = comment.strip()  # Remove any leading/trailing spaces from the comment
+
+        # Step 2: Split the generic definition at ':'
+        name_type = generic.split(":")
+        
+        if len(name_type) >= 2:
+            # Step 3: Extract the generic name (first part before ':')
+            generic_name = name_type[0].strip()
+
+            # Create the associated constant name by replacing the first letter with 'c'
+            associated_constant_name = 'c' + generic_name[1:] if generic_name else None
+
+            # Step 4: Extract the type and size (if any) from the second part
+            generic_type_with_size = name_type[1].strip()
+
+            # Step 5: Initialize value as None
+            value = None
+
+            # Step 6: Check if there's an initial value in the third part (if present)
+            if len(name_type) > 2:
+                value_part = name_type[2].strip()
+                if "=" in value_part:
+                    value = value_part.split("=")[1].strip().rstrip(";")  # Get the value and remove any trailing semicolon
+                    # Remove any comment from the value part
+                    if "--" in value:
+                        value, _ = value.split("--", 1)
+                        value = value.strip()
+ 
+            # Step 7: Extract the type (and size if any) by splitting on spaces
+            generic_type_parts = generic_type_with_size.split()
+            generic_type = " ".join(generic_type_parts)  # Join the parts to form the type (e.g., integer, std_logic_vector, etc.)
+            generic_type = generic_type.rstrip(";")  # Remove any semicolons
+            
+            # Step 8: Initialize size as None
+            size = None
+
+            # Step 9: Check if the type contains size (e.g., std_logic_vector(7 downto 0) or integer range)
+            if "(" in generic_type and ")" in generic_type:
+                # Extract size from something like std_logic_vector(7 downto 0) or integer range
+                generic_type, size_str = generic_type.split("(")
+                size = size_str.rstrip(")").strip()
+
+            # Step 10: Append to the generic_list as a dictionary (name, type, size, comment, associated_constant_name, value)
+            generic_list.append({
+                'name': generic_name,
+                'type': generic_type,
+                'size': size,
+                'comment': comment,  # Store the comment in a separate field
+                'associated_constant_name': associated_constant_name,  # New entry for the associated constant
+                'value': value  # Store the default value (if available)
+            })
+
+
+    # Process the ports and extract name, type, and size
+    port_list = []
+    for port in ports:
+        if ":" in port:
+            # Split port definition at ':'
+            name_type = port.split(":")
+            if len(name_type) >= 2:
+                # Extract the port name
+                port_name = name_type[0].strip()
+
+                # Split the rest of the port definition to handle comments
+                port_type_with_size = name_type[1].strip()
+
+                # Initialize comment as None (to store any inline comments)
+                comment = None
+
+                # Check if there's a comment and separate it from the port definition
+                if "--" in port_type_with_size:
+                    port_type_with_size, comment = port_type_with_size.split("--", 1)
+                    comment = comment.strip()  # Remove any leading/trailing spaces from the comment
+
+                # Remove direction part by splitting by spaces and keeping the part after the first space
+                port_type_parts = port_type_with_size.split()
+                port_type = " ".join(port_type_parts[1:])  # Join everything after the first part (which is the direction)
+                port_type = port_type.rstrip(";")
+                
+                # Initialize size as None
+                size = None
+                
+                # Check if the type contains size (e.g., std_logic_vector(7 downto 0))
+                if "(" in port_type and ")" in port_type:
+                    # Extract size from something like std_logic_vector(7 downto 0)
+                    port_type, size_str = port_type.split("(")
+                    size = size_str.rstrip(")").strip()
+
+                # Append to the port_list as a dictionary (name, type, size, comment)
+                port_list.append({
+                    'name': port_name,
+                    'type': port_type,
+                    'size': size,
+                    'comment': comment  # Store the comment in a separate field
+                })
+
+  
+    return entity_name, entity_architecture, generic_list, port_list
+
+
+##########################################################################################
+#                           Function to print generics to signals list                   #
+##########################################################################################
+def print_generics_to_signals_list(generics):
+    """
+    Prints the generics from the DUT and assigns them to constants in the testbench.
+    
+    Parameters:
+    generics (list of dict): A list of dictionaries, each representing a generic with keys like
+                              'associated_constant_name', 'type', 'size', and 'value'.
+    
+    Returns:
+    str: A formatted string representing the VHDL constant declarations.
+    """
+    tb_content = "    -- Generics from DUT - Assigned to constants\n"
+
+    # Calculate the maximum length of associated_constant_name 
+    max_name_length = max(len(generic['associated_constant_name']) for generic in generics)
+
+    for generic in generics:  
+        # Get the constant name 
+        constant_name = generic['associated_constant_name']
+        
+        # Calculate how many spaces to pad to align with the colon
+        padding = ' ' * (max_name_length - len(constant_name))
+        
+        # Prepare the type and size (if any)
+        if generic['size']:  # If there's a size, include it
+            type_with_size = f"{generic['type']}({generic['size']})"
+        else:
+            type_with_size = generic['type']
+        
+        # Prepare the default value (if any)
+        if generic['value']:  # If a default value exists, include it
+            default_value = f" := {generic['value']}"
+        else:
+            default_value = f" := -- TODO : Assign value"  # If no default value, leave it empty
+            print(bcolors.WARNING + "Warning - One or more generics have no initial value in the source file, and need values assigned")
+        
+        # Print the constant with proper alignment, size if available, and default value
+        tb_content += f"    constant {constant_name}{padding} : {type_with_size}{default_value};\n"
+
+    return tb_content
+
+
+##########################################################################################
+#                           Function to print ports to signals list                      #
+##########################################################################################
+def print_ports_to_signals_list(ports):
+    """
+    This function generates the VHDL signal declarations for external signals from the DUT.
+    
+    Parameters:
+    ports (list of dict): A list of dictionaries, each representing a port with keys 'name', 'type', and 'size'.
+    
+    Returns:
+    str: A formatted string representing the VHDL signal declarations.
+    """
+    tb_content = "    -- External Signals from DUT\n"
+
+    # Calculate the maximum length of the port names for alignment
+    max_name_length = max(len(port['name']) for port in ports)
+
+    for port in ports:
+        # Calculate the padding to align the colons
+        padding = ' ' * (max_name_length - len(port['name']))
+        
+        # Check if the port has a size (e.g., std_logic_vector(7 downto 0))
+        if port['size']:  # If a size exists
+            tb_content += f"    signal {port['name']}{padding} : {port['type']}({port['size']}); \n"
+        else:  # If no size is specified (e.g., std_logic)
+            tb_content += f"    signal {port['name']}{padding} : {port['type']}; \n"
+
+    return tb_content
+
+
+##########################################################################################
+#                           Function to print generic map                                #
+##########################################################################################
+def print_generic_map(generics):
+    """
+    This function generates the VHDL generic map for the DUT.
+
+    Parameters:
+    generics (list of dict): A list of dictionaries, each representing a generic with keys 'name' and 'associated_constant_name'.
+
+    Returns:
+    str: A formatted string representing the VHDL generic map.
+    """
+    tb_content = "    -- Generic map for DUT\n"
+    tb_content += "    generic map (\n"
+
+    # Calculate the maximum length of the generic names
+    max_generic_name_length = max(len(generic['name']) for generic in generics)
+
+    for i, generic in enumerate(generics):
+        # Get the generic name
+        generic_name = generic['name']
+
+        # Calculate padding to align the generic names with the '=>'
+        padding = ' ' * (max_generic_name_length - len(generic_name))
+
+        # Create the map entry: generic_name => constant_name
+        tb_content += f"        {generic_name}{padding} => {generic['associated_constant_name']}{',' if i < len(generics) - 1 else ''}\n"
+
+    tb_content += "    )\n\n"
+    
+    return tb_content
+
+
+##########################################################################################
+#                           Function to print port map                                   #
+##########################################################################################
+def print_port_map(ports):
+    """
+    This function generates the VHDL port map for the DUT.
+
+    Parameters:
+    ports (list of dict): A list of dictionaries, each representing a port with a 'name' key.
+
+    Returns:
+    str: A formatted string representing the VHDL port map.
+    """
+    tb_content = "    port map (\n"
+
+    # Find the maximum length of port names for alignment
+    max_port_length = max(len(port['name']) for port in ports)
+
+    for i, port in enumerate(ports):
+        # Calculate the necessary spacing to align the '=>' operator
+        spacing = ' ' * (max_port_length - len(port['name']))  # Extra spaces needed for alignment
+
+        # Create the map entry: port_name => port_name
+        tb_content += f"        {port['name']}{spacing} => {port['name']}{',' if i < len(ports) - 1 else ''}\n"
+
+    tb_content += "    );\n\n"
+    
+    return tb_content
+
+
+##########################################################################################
+#                           Function to print stimulus proces                            #
+##########################################################################################
+def print_stim_process():
+    """
+    This function generates a basic VHDL process for stimulus generation.
+
+    Returns:
+    str: A formatted string representing the stimulus process in VHDL.
+    """
+    tb_content = """
+    stimulus_process : process
+        -- insert variables here
+    begin
+        -- insert stimulus here
+    end process;
+    """
+    
+    return tb_content
+
+
+##########################################################################################
+#                           Function to print testbench                                  #
+##########################################################################################
+def generate_testbench(entity_name, entity_architecture, generics, ports):
+    tb_name = f"{entity_name}_tb"
+
+    tb_content = f"""
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity {tb_name} is
+    -- empty
+end {tb_name};
+
+architecture bench of {tb_name} is \n"""
+    
+    # Print generics to signals list 
+    tb_content += print_generics_to_signals_list(generics)
+    tb_content += f"\n"
+
+    # Print all ports to signals list
+    tb_content += print_ports_to_signals_list(ports)
+   
+    tb_content += "\nbegin\n"
+    tb_content += f"    -- Instantiate the Design Under Test (DUT)\n"
+    
+    # Instantiate the DUT using entity instantiation 
+    tb_content += f"    DUT: entity {entity_name}({entity_architecture})\n"               # TODO Extract architecture from the source file instead of assuming
+    
+    # Print the generic map
+    tb_content += print_generic_map(generics)
+
+    # Print the port map
+    tb_content += print_port_map(ports)
+    
+    tb_content += print_stim_process()
+
+    tb_content += "\nend bench;\n"
+
+    return tb_content
+
+
+
+##########################################################################################
+#                                      MAIN                                              #
+##########################################################################################
+if __name__ == "__main__":
+    # help command
+    help_usage = """
+        Usage: python3 tb_gen.py [VHDL FILE]...
+
+    Generate testbench template of VHDL FILE(s) to current working directory
+
+    Examples:
+        python3 tb_gen.py adder.vhdl mux.vhdl ...
+"""
+
+    if len(sys.argv) < 2:
+        print(help_usage)
+    else:
+        # processing every arguments (except first argument(script name))
+        for arg in sys.argv[1:]:
+
+            # check if VHDL file
+            if arg.endswith((".vhdl", ".vhd")):
+                entity_name, entity_architecture, generics, ports    = extract_entity_info(arg)
+                testbench                       = generate_testbench(entity_name, entity_architecture, generics, ports)
+                tb_file_name                    = f"{entity_name}_tb.vhd"
+                
+                # Get file path
+                file_path = os.path.join(os.getcwd(), tb_file_name)
+
+                # Check if that file name already exists
+                override = False
+                if os.path.exists(file_path):
+                    override = True
+                    answer = input(bcolors.FAIL + "File " + tb_file_name + " already exists. Do you want to override it?([Y or N]): "+ bcolors.ENDC).lower()
+                
+                # we only need to check the value of answer when override is True
+                if not (override) or answer in ("yes", "y"):
+                    # write the testbench file
+                    try:
+                        with open(tb_file_name, 'w', encoding="utf-8") as writer:
+                            writer.write(testbench)
+                            print(bcolors.OKGREEN + "GENERATED TESTBENCH: " + file_path  + bcolors.ENDC)
+                    except Exception as e:
+                        print(bcolors.FAIL + f"An error occurred: {e}" + bcolors.ENDC)
+            else:
+                print(bcolors.WARNING + "Not a VHDL file. Remember to add the file extension (.vhd / .vhdl)")
